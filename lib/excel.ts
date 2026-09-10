@@ -20,8 +20,11 @@ export async function createRomaneioWorkbook(data: ProcessingResult) {
   const template = await readFile(templatePath);
 
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(template);
-  wb.creator = "Famossul | Gerador de Romaneios";
+
+const templateBuffer = Buffer.from(template);
+await wb.xlsx.load(templateBuffer as any);
+
+wb.creator = "Famossul | Gerador de Romaneios";
 
   const ws = wb.getWorksheet("Romaneio") || wb.worksheets[0];
   if (!ws) throw new Error("Modelo de romaneio inválido.");
