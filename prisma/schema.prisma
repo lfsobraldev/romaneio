@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Processing {
+  id             String    @id @default(cuid())
+  orderNumber    String
+  client         String
+  destination    String?
+  delivery       String?
+  hasMachining   Boolean   @default(false)
+  status         String    @default("DRAFT")
+  totalPackages  Int       @default(0)
+  sourceFileName String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  packages       Package[]
+
+  @@index([orderNumber])
+  @@index([createdAt])
+}
+
+model Package {
+  id           String      @id @default(cuid())
+  processingId String
+  number       Int
+  games        Int?
+  totalVolume  Decimal?    @db.Decimal(12, 4)
+  notes        String?
+  createdAt    DateTime    @default(now())
+  processing   Processing  @relation(fields: [processingId], references: [id], onDelete: Cascade)
+  rows         PackageRow[]
+
+  @@unique([processingId, number])
+}
+
+model PackageRow {
+  id          String   @id @default(cuid())
+  packageId   String
+  quantity    Int
+  lengthMm    Int?
+  widthMm     Int?
+  thicknessMm Int?
+  volume      Decimal? @db.Decimal(12, 4)
+  product     String
+  observation String?
+  package     Package  @relation(fields: [packageId], references: [id], onDelete: Cascade)
+}
