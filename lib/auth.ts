@@ -1,36 +1,112 @@
-import { SignJWT, jwtVerify } from "jose";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
+import { prisma } from "@/lib/prisma";
+import { SignJWT, jwtVerify } from "jose";
 
-const COOKIE = "famossul_session";
-const secret = () => new TextEncoder().encode(process.env.AUTH_SECRET || "dev-only-change-me");
+const secret = new TextEncoder().encode(
+  process.env.AUTH_SECRET || "change-this-secret"
+);
 
-export async function validateCredentials(user: string, password: string) {
-  if (!process.env.ADMIN_USER || !process.env.ADMIN_PASSWORD_HASH) return false;
-  return user === process.env.ADMIN_USER && bcrypt.compare(password, process.env.ADMIN_PASSWORD_HASH);
+const COOKIE_NAME = "famossul_session";
+
+export async function authenticate(username: string, password: string) {
+  const adminUser = process.env.ADMIN_USER;
+  const initialPassword = process.env.ADMIN_INITIAL_PASSWORD;
+
+  if (!adminUser) {
+    throw new Error("ADMIN_USER não configurado.");
+  }
+
+  // Procura usuário no Neon
+  let user = await prisma.user.findUnique({
+    where: {
+      username,
+    },
+  });
+
+  // Primeiro acesso:
+  // cria automaticamente o administrador no Neon
+  if (!user) {
+    if (
+      username !== adminUser ||
+      !initialPassword ||
+      password !== initialPassword
+    ) {
+      return null;
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    user = await prisma.user.create({
+      data: {
+        username,
+        passwordHash,
+      },
+    });
+  }
+
+  // Usuário já existe: verifica senha criptografada
+  const validPassword = await bcrypt.compare(
+    password,
+    user.passwordHash
+  );
+
+  if (!validPassword) {
+    return null;
+  }
+
+  return {
+    id: user.id,
+    username: user.username,
+  };
 }
 
-export async function createSession() {
-  const token = await new SignJWT({ role: "admin" })
+export async function createSession(user: {
+  id: string;
+  username: string;
+}) {
+  const token = await new SignJWT({
+    userId: user.id,
+    username: user.username,
+  })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime("12h")
-    .sign(secret());
-  const jar = await cookies();
-  jar.set(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 60 * 60 * 12 });
+    .setExpirationTime("30d")
+    .sign(secret);
+
+  const cookieStore = await cookies();
+
+  cookieStore.set(COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 30,
+  });
 }
 
-export async function clearSession() {
-  const jar = await cookies();
-  jar.set(COOKIE, "", { httpOnly: true, path: "/", maxAge: 0 });
-}
-
-export async function isAuthenticated() {
+export async function getSession() {
   try {
-    const jar = await cookies();
-    const token = jar.get(COOKIE)?.value;
-    if (!token) return false;
-    await jwtVerify(token, secret());
-    return true;
-  } catch { return false; }
+    const cookieStore = await cookies();
+    const token = cookieStore.get(COOKIE_NAME)?.value;
+
+    if (!token) {
+      return null;
+    }
+
+    const { payload } = await jwtVerify(token, secret);
+
+    return {
+      id: payload.userId as string,
+      username: payload.username as string,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function destroySession() {
+  const cookieStore = await cookies();
+
+  cookieStore.delete(COOKIE_NAME);
 }
