@@ -9,7 +9,7 @@ function rowVolume(row: PackageRow): number | undefined {
   return (row.quantity * row.lengthMm * row.widthMm * row.thicknessMm) / 1_000_000_000;
 }
 
-function setValue(ws: ExcelJS.Worksheet, address: string, value: string | number | null | undefined) {
+function setValue(ws: ExcelJS.Worksheet, address: string, value: string | number | Date | null | undefined) {
   ws.getCell(address).value = value ?? "";
 }
 
