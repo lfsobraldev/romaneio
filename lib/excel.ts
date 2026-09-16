@@ -1,176 +1,145 @@
 import ExcelJS from "exceljs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ProcessingResult, PackageRow } from "./types";
+import type { PackageRow, ProcessingResult } from "./types";
 import { MOUNT_LABELS } from "./settings";
+import { rowVolume } from "./logistics";
 
-function rowVolume(row: PackageRow): number {
-  if (typeof row.volume === "number") return row.volume;
-  if (!row.lengthMm || !row.widthMm || !row.thicknessMm || !row.quantity) return 0;
-  return (row.quantity * row.lengthMm * row.widthMm * row.thicknessMm) / 1_000_000_000;
+// Modelo oficial em branco: 13..108 dados, 109 total, 110 filtro/página, 111 observação.
+const START_ROW = 13, LAST_DATA_ROW = 108, TOTAL_ROW = 109, FILTER_ROW = 110, OBS_ROW = 111;
+const COL = { pkg:"A", order:"B", games:"C", qty:"D", len:"E", wid:"F", thk:"G", m3:"H", palletM3:"I", product:"J", obs:"K" } as const;
+
+function setValue(ws:ExcelJS.Worksheet,address:string,value:string|number|Date|null|undefined){ ws.getCell(address).value = value ?? ""; }
+function mergeSafe(ws:ExcelJS.Worksheet,ref:string){ try{ ws.mergeCells(ref); }catch{} }
+function itemText(row:PackageRow){
+  return row.itemText || row.observation || (row.sourceItems?.length ? (row.sourceItems.length===1 ? `Item ${row.sourceItems[0]}` : `Itens ${row.sourceItems.join(" / ")}`) : "");
+}
+function unmergeDataArea(ws:ExcelJS.Worksheet){
+  const merges=(ws as any)._merges||{};
+  for(const ref of Object.keys(merges)){
+    const m=ref.match(/([A-Z]+)(\d+):([A-Z]+)(\d+)/); if(!m) continue;
+    const a=Number(m[2]),b=Number(m[4]);
+    if(a<=LAST_DATA_ROW && b>=START_ROW){ try{ws.unMergeCells(ref)}catch{} }
+  }
+}
+function clearDataValues(ws:ExcelJS.Worksheet){
+  for(let r=START_ROW;r<=LAST_DATA_ROW;r++){
+    ws.getRow(r).hidden=false;
+    for(let c=1;c<=11;c++) ws.getCell(r,c).value=null;
+  }
+}
+function groups(rows:PackageRow[]){
+  const out:Array<{start:number;end:number;id:string}> = [];
+  let start=0, id=rows[0]?.groupId || `ROW-0`;
+  for(let i=1;i<=rows.length;i++){
+    const next=i<rows.length ? (rows[i].groupId || `ROW-${i}`) : "__END__";
+    if(next!==id){ out.push({start,end:i-1,id}); start=i; id=next; }
+  }
+  return out;
+}
+function mergeProducts(ws:ExcelJS.Worksheet,rows:PackageRow[],excelStart:number){
+  // Cada descrição não vazia inicia um subgrupo; linhas vazias seguintes são continuação física da mesma descrição.
+  let start=-1;
+  for(let i=0;i<=rows.length;i++){
+    const has = i<rows.length && Boolean(rows[i].product?.trim());
+    if(has){
+      if(start>=0 && i-start>1) mergeSafe(ws,`${COL.product}${excelStart+start}:${COL.product}${excelStart+i-1}`);
+      start=i;
+    }
+  }
+  if(start>=0 && rows.length-start>1) mergeSafe(ws,`${COL.product}${excelStart+start}:${COL.product}${excelStart+rows.length-1}`);
 }
 
-function setValue(ws: ExcelJS.Worksheet, address: string, value: string | number | Date | null | undefined) {
-  ws.getCell(address).value = value ?? "";
-}
-
-function mergeSafe(ws: ExcelJS.Worksheet, range: string) {
-  try { ws.mergeCells(range); } catch {}
-}
-
-export async function createRomaneioWorkbook(data: ProcessingResult) {
-  // Este template é um ROMANEIO REAL aprovado da Famossul.
-  // O sistema apenas limpa os dados variáveis e preenche o novo pedido,
-  // mantendo cores, bordas, larguras, alturas, fontes e impressão originais.
-  const templatePath = path.join(process.cwd(), "public", "templates", "Romaneio.xlsx");
-  const template = await readFile(templatePath);
-
+export async function createRomaneioWorkbook(data:ProcessingResult){
+  const template = await readFile(path.join(process.cwd(),"public","templates","Romaneio.xlsx"));
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(Buffer.from(template) as any);
-  wb.creator = "Famossul | Gerador de Romaneios";
-
+  wb.creator="Famossul | Gerador de Romaneios V6";
   const ws = wb.getWorksheet("Romaneio") || wb.worksheets[0];
-  if (!ws) throw new Error("Modelo de romaneio inválido.");
+  if(!ws) throw new Error("Modelo oficial Romaneio.xlsx inválido.");
 
-  // Remove as mesclagens do romaneio usado como modelo somente na área variável.
-  const merges = (ws as any)._merges || {};
-  for (const key of Object.keys(merges)) {
-    const range = String(key);
-    const m = range.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/);
-    if (!m) continue;
-    const r1 = Number(m[2]);
-    const r2 = Number(m[4]);
-    if (r1 >= 13 && r2 <= 126) {
-      try { ws.unMergeCells(range); } catch {}
-    }
-  }
+  // NÃO altera labels, cores, bordas, larguras, logo ou estrutura do modelo.
+  setValue(ws,"B7",new Date()); ws.getCell("B7").numFmt="dd/mm/yyyy";
+  setValue(ws,"B8",data.client);
+  setValue(ws,"B9",data.destination);
+  setValue(ws,"B10",data.orderNumber);
+  setValue(ws,"B11",data.delivery||"");
+  // No modelo oficial os rótulos ficam em H7/H8/H9 e G11:J11. O valor entra em K.
+  setValue(ws,"K7",data.orderOptions?.motorista||"");
+  setValue(ws,"K8",data.orderOptions?.transportadora||"");
+  setValue(ws,"K9",data.orderOptions?.placa||"");
+  setValue(ws,"K11",data.orderOptions?.notaFiscal||"");
 
-  // Cabeçalho do modelo oficial.
-  setValue(ws, "B7", new Date());
-  ws.getCell("B7").numFmt = "dd/mm/yyyy";
-  setValue(ws, "B8", data.client);
-  setValue(ws, "B9", data.destination);
-  setValue(ws, "B10", data.orderNumber);
-  setValue(ws, "B11", data.delivery || "");
-  setValue(ws, "H7", data.orderOptions?.motorista || "");
-  setValue(ws, "H8", data.orderOptions?.transportadora || "");
-  setValue(ws, "H9", data.orderOptions?.placa || "");
-  setValue(ws, "H11", data.orderOptions?.notaFiscal || "");
+  unmergeDataArea(ws);
+  clearDataValues(ws);
 
-  // Limpa apenas valores. A aparência do arquivo real continua intacta.
-  for (let r = 13; r <= 126; r++) {
-    for (let c = 1; c <= 10; c++) ws.getCell(r, c).value = null;
-    ws.getRow(r).hidden = false;
-  }
-
-  // Limpa valores específicos do rodapé do pedido usado como template.
-  setValue(ws, "B127", "");
-  setValue(ws, "D127", "");
-  setValue(ws, "B128", MOUNT_LABELS[data.mountType] || data.mountType);
-  const extraRomaneio = [
-    data.config?.romaneioNote,
-    data.orderOptions?.romaneioExtraText,
-    ...(data.config?.additionalItems || []).filter(i => i.enabled && (i.target === "ROMANEIO" || i.target === "AMBOS")).map(i => i.text || i.label),
-    data.orderOptions?.conferente ? `Conferente: ${data.orderOptions.conferente}` : "",
-    data.orderOptions?.separador ? `Separado por: ${data.orderOptions.separador}` : "",
-  ].filter(Boolean).join(" | ");
-  setValue(ws, "B129", extraRomaneio);
-
-  const START = 13;
-  const MAX_DATA_ROW = 125;
-  let r = START;
-
-  for (const pkg of data.packages) {
-    if (!pkg.rows?.length) continue;
-    const packageStart = r;
-
-    for (const item of pkg.rows) {
-      if (r > MAX_DATA_ROW) throw new Error("Quantidade de linhas excede o modelo real do romaneio (até linha 125).");
-
-      setValue(ws, `C${r}`, item.games ?? "");
-      setValue(ws, `D${r}`, item.quantity || "");
-      setValue(ws, `E${r}`, item.lengthMm || "");
-      setValue(ws, `F${r}`, item.widthMm || "");
-      setValue(ws, `G${r}`, item.thicknessMm || "");
-      const vol = rowVolume(item);
-      setValue(ws, `H${r}`, vol || 0);
-      ws.getCell(`H${r}`).numFmt = "0.000";
-      setValue(ws, `I${r}`, item.product || "");
-      setValue(ws, `J${r}`, item.observation || "");
-
-      for (let c = 1; c <= 10; c++) {
-        ws.getCell(r, c).alignment = {
-          ...(ws.getCell(r, c).alignment || {}),
-          horizontal: c >= 9 ? "center" : "center",
-          vertical: "middle",
-          wrapText: true,
-        };
-      }
+  let r=START_ROW;
+  for(const pkg of data.packages){
+    if(!pkg.rows?.length) continue;
+    if(r+pkg.rows.length-1>LAST_DATA_ROW) throw new Error("O romaneio possui mais linhas do que o modelo oficial comporta. Divida o carregamento ou gere um segundo romaneio.");
+    const pStart=r;
+    for(const row of pkg.rows){
+      setValue(ws,`${COL.games}${r}`,row.games??"");
+      setValue(ws,`${COL.qty}${r}`,row.quantity||"");
+      setValue(ws,`${COL.len}${r}`,row.lengthMm||"");
+      setValue(ws,`${COL.wid}${r}`,row.widthMm||"");
+      setValue(ws,`${COL.thk}${r}`,row.thicknessMm||"");
+      // Mantém a fórmula original do modelo para m³, quando há dimensões; caso contrário usa valor vindo do documento.
+      if(row.lengthMm && row.widthMm && row.thicknessMm && row.quantity){
+        ws.getCell(`${COL.m3}${r}`).value={formula:`G${r}*F${r}*E${r}*D${r}/1000000000`,result:rowVolume(row)} as any;
+      } else setValue(ws,`${COL.m3}${r}`,rowVolume(row)||0);
+      ws.getCell(`${COL.m3}${r}`).numFmt="0.000";
+      setValue(ws,`${COL.product}${r}`,row.product||"");
+      setValue(ws,`${COL.obs}${r}`,itemText(row));
+      ws.getCell(`${COL.product}${r}`).alignment={...(ws.getCell(`${COL.product}${r}`).alignment||{}),vertical:"middle",horizontal:"center",wrapText:true};
+      ws.getCell(`${COL.obs}${r}`).alignment={...(ws.getCell(`${COL.obs}${r}`).alignment||{}),vertical:"middle",horizontal:"center",wrapText:true};
       r++;
     }
-
-    const packageEnd = r - 1;
-    setValue(ws, `A${packageStart}`, pkg.number);
-    setValue(ws, `B${packageStart}`, data.orderNumber);
-
-    if (packageEnd > packageStart) {
-      mergeSafe(ws, `A${packageStart}:A${packageEnd}`);
-      mergeSafe(ws, `B${packageStart}:B${packageEnd}`);
-    }
-    ws.getCell(`A${packageStart}`).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-    ws.getCell(`B${packageStart}`).alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-
-    // Jogos podem mudar dentro do mesmo pallet (acontece no romaneio 25948).
-    // Mescla C somente dentro de cada subgrupo iniciado por um valor de jogos.
-    let gamesStart: number | undefined;
-    for (let rr = packageStart; rr <= packageEnd + 1; rr++) {
-      const hasGames = rr <= packageEnd && ws.getCell(`C${rr}`).value !== "" && ws.getCell(`C${rr}`).value != null;
-      if (hasGames) {
-        if (gamesStart !== undefined && rr - 1 > gamesStart) mergeSafe(ws, `C${gamesStart}:C${rr - 1}`);
-        gamesStart = rr;
-      }
-      if (rr === packageEnd + 1 && gamesStart !== undefined && packageEnd > gamesStart) mergeSafe(ws, `C${gamesStart}:C${packageEnd}`);
+    const pEnd=r-1;
+    setValue(ws,`${COL.pkg}${pStart}`,pkg.number);
+    setValue(ws,`${COL.order}${pStart}`,data.orderNumber);
+    setValue(ws,`${COL.palletM3}${pStart}`,pkg.totalVolume ?? pkg.rows.reduce((s,x)=>s+rowVolume(x),0));
+    ws.getCell(`${COL.palletM3}${pStart}`).numFmt="0.000";
+    if(pEnd>pStart){
+      mergeSafe(ws,`${COL.pkg}${pStart}:${COL.pkg}${pEnd}`);
+      mergeSafe(ws,`${COL.order}${pStart}:${COL.order}${pEnd}`);
+      mergeSafe(ws,`${COL.palletM3}${pStart}:${COL.palletM3}${pEnd}`);
     }
 
-    // Produto e observação: quando as linhas seguintes estão vazias, elas pertencem ao item acima.
-    for (const col of ["I", "J"]) {
-      let groupStart: number | undefined;
-      for (let rr = packageStart; rr <= packageEnd + 1; rr++) {
-        const value = rr <= packageEnd ? ws.getCell(`${col}${rr}`).value : "__END__";
-        const nonEmpty = value !== "" && value != null;
-        if (nonEmpty) {
-          if (groupStart !== undefined && rr - 1 > groupStart) mergeSafe(ws, `${col}${groupStart}:${col}${rr - 1}`);
-          groupStart = rr <= packageEnd ? rr : undefined;
-        }
+    const local=pkg.rows;
+    for(const g of groups(local)){
+      const s=pStart+g.start,e=pStart+g.end;
+      const games=local[g.start]?.games;
+      if(e>s && games) mergeSafe(ws,`${COL.games}${s}:${COL.games}${e}`);
+      const obsIndex=local.slice(g.start,g.end+1).findIndex(x=>Boolean(itemText(x)));
+      if(e>s && obsIndex>=0){
+        const master=s+obsIndex;
+        if(master!==s) setValue(ws,`${COL.obs}${s}`,itemText(local[g.start+obsIndex]));
+        mergeSafe(ws,`${COL.obs}${s}:${COL.obs}${e}`);
       }
+      mergeProducts(ws,local.slice(g.start,g.end+1),s);
     }
   }
 
-  // Totais no mesmo formato do arquivo aprovado.
-  const totalRow = r;
-  const allRows = data.packages.flatMap(p => p.rows || []);
-  const totalGames = allRows.reduce((s, row) => s + (row.games || 0), 0);
-  const totalQty = allRows.reduce((s, row) => s + (row.quantity || 0), 0);
-  const totalM3 = allRows.reduce((s, row) => s + rowVolume(row), 0);
+  for(let rr=r;rr<=LAST_DATA_ROW;rr++) ws.getRow(rr).hidden=true;
 
-  if (totalRow > 126) throw new Error("O romaneio ultrapassou a área disponível do modelo.");
-  setValue(ws, `C${totalRow}`, totalGames || "");
-  setValue(ws, `D${totalRow}`, totalQty || "");
-  setValue(ws, `G${totalRow}`, "Total m³");
-  setValue(ws, `H${totalRow}`, totalM3);
-  ws.getCell(`H${totalRow}`).numFmt = "0.000";
+  // Total e rodapé permanecem nas linhas e com o estilo do arquivo original.
+  ws.getCell(`C${TOTAL_ROW}`).value={formula:`SUM(C${START_ROW}:C${LAST_DATA_ROW})`} as any;
+  ws.getCell(`D${TOTAL_ROW}`).value={formula:`SUM(D${START_ROW}:D${LAST_DATA_ROW})`} as any;
+  setValue(ws,`G${TOTAL_ROW}`,"Total m³");
+  ws.getCell(`H${TOTAL_ROW}`).value={formula:`SUM(H${START_ROW}:H${LAST_DATA_ROW})`} as any;
+  ws.getCell(`H${TOTAL_ROW}`).numFmt="0.000";
+  ws.getCell(`K${TOTAL_ROW}`).value={formula:`ROUNDUP(((H${TOTAL_ROW}*420)/1000),1)&\" - toneladas\"`} as any;
 
-  // Esconde linhas que sobraram e mantém o rodapé encostado no conteúdo, como na planilha real.
-  for (let rr = totalRow + 1; rr <= 126; rr++) ws.getRow(rr).hidden = true;
+  setValue(ws,`A${FILTER_ROW}`,"Filtro:"); setValue(ws,`B${FILTER_ROW}`,data.orderOptions?.filtro||"");
+  setValue(ws,`C${FILTER_ROW}`,"Pag.:"); setValue(ws,`D${FILTER_ROW}`,data.orderOptions?.pagina||"");
+  setValue(ws,`A${OBS_ROW}`,"Obs:");
+  const mount=MOUNT_LABELS[data.mountType]||data.mountType;
+  const extra=[mount,data.config?.romaneioNote,data.orderOptions?.romaneioExtraText,...(data.config?.additionalItems||[]).filter(i=>i.enabled&&(i.target==="ROMANEIO"||i.target==="AMBOS")).map(i=>i.text||i.label),data.orderOptions?.conferente?`Conferente: ${data.orderOptions.conferente}`:"",data.orderOptions?.separador?`Separado por: ${data.orderOptions.separador}`:""].filter(Boolean).join(" | ");
+  setValue(ws,`B${OBS_ROW}`,extra);
+  ws.getCell(`B${OBS_ROW}`).alignment={...(ws.getCell(`B${OBS_ROW}`).alignment||{}),wrapText:true,vertical:"middle"};
 
-  ws.pageSetup = {
-    ...ws.pageSetup,
-    orientation: "landscape",
-    fitToPage: true,
-    fitToWidth: 1,
-    fitToHeight: 0,
-    printArea: "A1:J129",
-  };
-
+  // Preserva a configuração de impressão existente no modelo oficial; apenas garante a área correta.
+  ws.pageSetup.printArea="A1:K111";
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
