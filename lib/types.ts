@@ -1,5 +1,7 @@
 export type MountType = "MONTADO_HS" | "MONTADO_TIMADEL" | "COMPLEMENTO_OBRA" | "REVENDA" | "MONTADO_ESTANCIA";
 export type PackageStatus = "VALIDO" | "ATENCAO" | "INVALIDO";
+export type ProductCategory = "PORTA" | "MARCO" | "ALIZAR" | "FERRAGEM" | "KIT" | "OUTRO";
+export type SourceMode = "PEDIDO" | "ROMANEIO_PRONTO";
 
 export type AdditionalItem = {
   id: string;
@@ -35,13 +37,27 @@ export type OrderOptions = {
   transportadora?: string;
   placa?: string;
   notaFiscal?: string;
+  filtro?: string;
+  pagina?: string;
   conferente?: string;
   separador?: string;
   romaneioExtraText?: string;
   etiquetaExtraText?: string;
 };
 
+export type SourceCatalogItem = {
+  item: string;
+  code: string;
+  description: string;
+  unit?: string;
+  quantity: number;
+  volume?: number;
+  category?: ProductCategory;
+  used: boolean;
+};
+
 export type PackageRow = {
+  id?: string;
   games?: number;
   quantity: number;
   lengthMm?: number;
@@ -51,7 +67,21 @@ export type PackageRow = {
   product: string;
   observation?: string;
   packaging?: "PLASTICO" | "PAPELAO" | "OUTRO";
-  category?: "PORTA" | "MARCO" | "ALIZAR" | "FERRAGEM" | "KIT" | "OUTRO";
+  category?: ProductCategory;
+
+  sourceItems?: string[];
+  sourceCode?: string;
+  sourceCodes?: string[];
+  originalDescription?: string;
+  groupId?: string;
+  groupType?: ProductCategory;
+  productGroupId?: string;
+  mergeProduct?: boolean;
+  mergeObservation?: boolean;
+  itemText?: string;
+  application?: string;
+  hand?: "DIREITA" | "ESQUERDA" | "SEM_MAO";
+  matchConfidence?: number;
 };
 
 export type PackageData = {
@@ -65,6 +95,7 @@ export type PackageData = {
   limitM3?: number;
   limitQuantity?: number;
   warnings?: string[];
+  packageType?: ProductCategory | "MISTO";
 };
 
 export type ProcessingResult = {
@@ -80,4 +111,10 @@ export type ProcessingResult = {
   warnings: string[];
   config?: LogisticsConfig;
   orderOptions?: OrderOptions;
+  sourceItemCount?: number;
+  sourceItems?: string[];
+  sourceCatalog?: SourceCatalogItem[];
+  unmappedItems?: SourceCatalogItem[];
+  sourceMode?: SourceMode;
+  sourceFileName?: string;
 };
